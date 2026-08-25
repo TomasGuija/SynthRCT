@@ -1,0 +1,95 @@
+# ============================================================
+# TRAINER
+# ============================================================
+trainer:
+  profiler: simple
+  precision: bf16-mixed
+  max_epochs: 500
+  accelerator: auto
+  devices: auto
+  log_every_n_steps: 50
+  check_val_every_n_epoch: 1
+  default_root_dir: runs/SynthRCT
+
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: val/loss_total
+        mode: min
+        save_top_k: 1
+        filename: best
+        dirpath: runs/SynthRCT/checkpoints
+
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        save_last: true
+        save_top_k: 0
+        dirpath: runs/SynthRCT/checkpoints
+
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: epoch
+
+  logger:
+    class_path: lightning.pytorch.loggers.CSVLogger
+    init_args:
+      save_dir: runs
+      name: SynthRCT
+
+
+# ============================================================
+# DATA MODULE
+# ============================================================
+data:
+  h5_path: data/DIR4DCT.h5
+  val_case_ids: [0]
+
+  slab_size: 48
+  stitch_stride: null
+  num_sampled_regions: 4
+  min_scan_distance: 2
+
+  batch_size: 1
+  num_workers: 2
+  prefetch_factor: 1
+  pin_memory: false
+  shuffle: true
+  persistent_workers: false
+
+
+# ============================================================
+# MODEL
+# ============================================================
+model:
+  # --- local decoding geometry ---
+  slab_size: 48
+  stitch_stride: null
+
+  # --- architecture ---
+  base_ch: 16
+  n_levels: 4
+  out_channels: 3
+  convs_per_block: 1
+  latent_dim: 32
+
+  # --- SVF integration ---
+  svf_steps: 7
+
+  # --- loss weights ---
+  sim_weight: 10.0
+  kl_weight: 1.0e-3
+  prior_kl_weight: 1.0
+
+  # --- deep supervision ---
+  # Use [] to disable deep supervision.
+  # If enabled, scales must be ordered coarse-to-fine.
+  deep_supervision_scales: [8, 4, 2]
+  deep_supervision_weights: [0.025, 0.05, 0.1]
+
+  # --- KL schedule ---
+  kl_start_epoch: 25
+  kl_warmup_epochs: 100
+
+  # --- optimizer ---
+  lr: 1.0e-4
+  weight_decay: 1.0e-4

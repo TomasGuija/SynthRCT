@@ -1,0 +1,17 @@
+# Python and local environments
+.venv/
+myenv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.vscode/
+.env
+
+# Private data, models, and generated outputs
+data/
+checkpoints/
+runs/
+wandb/
+demo_outputs/
+eval_results*/

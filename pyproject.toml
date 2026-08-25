@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rctsynth"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.5",
+    "lightning>=2.5",
+    "monai>=1.5",
+    "jsonargparse[signatures]>=4.27",
+    "h5py>=3.10",
+    "numpy>=1.26",
+    "scipy>=1.12",
+    "nibabel>=5.2",
+    "matplotlib>=3.8",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+notebook = [
+    "jupyterlab>=4",
+    "pillow>=10",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
