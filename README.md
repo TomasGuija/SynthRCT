@@ -39,6 +39,35 @@ pip install -e ".[notebook]"
 
 If you need a specific CUDA-enabled PyTorch build, install the appropriate PyTorch version first and then run `pip install -e .`. CPU inference is supported but full-volume decoding can be slow.
 
+## Pretrained weights
+
+The pretrained RCTSynth weights are openly available from
+[Hugging Face](https://huggingface.co/TomasGuija/RCTSynth). Public downloads do
+not require authentication.
+
+Install the Hugging Face Hub client and download the checkpoint into the path
+used by the inference notebook:
+
+```bash
+pip install huggingface_hub
+hf download TomasGuija/RCTSynth rctsynth.ckpt --local-dir checkpoints
+```
+
+The same file can be downloaded and loaded from Python:
+
+```python
+from huggingface_hub import hf_hub_download
+from rctsynth.utils.model_loading import load_vae
+
+checkpoint_path = hf_hub_download(
+    repo_id="TomasGuija/RCTSynth",
+    filename="rctsynth.ckpt",
+    local_dir="checkpoints",
+)
+
+module, model = load_vae(checkpoint_path, device="cuda")
+```
+
 ## Data preparation
 
 Training data are not distributed with this repository. Training expects a local HDF5 file containing normalized CT volumes, case and respiratory/time identifiers, and valid axial ranges. The complete schema is documented in [`src/rctsynth/data/README.md`](src/rctsynth/data/README.md).
@@ -107,6 +136,13 @@ The 2D interpolation GIF uses Pillow. The optional surface-rendered lung GIF add
 
 
 
+
+## License
+
+The RCTSynth software and released model weights are available under the
+[MIT License](LICENSE). The third-party demo data under `data/demo/` are not
+covered by that license; see
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for provenance and terms.
 
 ## Citation
 
