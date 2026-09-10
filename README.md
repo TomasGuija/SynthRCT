@@ -1,5 +1,8 @@
 # SynthRCT: Scalable Conditional Deformation Synthesis for Synthetic Repeat CT Generation
 
+[![arXiv](https://img.shields.io/badge/arXiv-2609.03956-b31b1b.svg)](https://arxiv.org/abs/2609.08627)
+
+
 This is the official repository for the paper "**SynthRCT: Scalable Conditional Deformation Synthesis for Synthetic Repeat CT Generation**".
 RCTSynth learns a distribution of plausible anatomical deformations from longitudinal CT images. Given one moving CT volume, the model can sample latent deformation codes, decode them into dense deformation fields, and generate multiple anatomically consistent repeat CT volumes.
 
@@ -45,19 +48,28 @@ The pretrained RCTSynth weights are openly available from
 [Hugging Face](https://huggingface.co/TomasGuija/RCTSynth). Public downloads do
 not require authentication.
 
-Install the Hugging Face Hub client and download the checkpoint into the path
-used by the inference notebook:
+Install the Hugging Face Hub client and download the model configuration and
+checkpoint into the path used by the inference notebook. The configuration
+records the released architecture, checkpoint format, and weight checksum.
 
 ```bash
 pip install huggingface_hub
-hf download TomasGuija/RCTSynth rctsynth.ckpt --local-dir checkpoints
+hf download TomasGuija/RCTSynth \
+  config.json rctsynth.ckpt \
+  --local-dir checkpoints
 ```
 
-The same file can be downloaded and loaded from Python:
+The same files can be downloaded and the checkpoint loaded from Python:
 
 ```python
 from huggingface_hub import hf_hub_download
 from rctsynth.utils.model_loading import load_vae
+
+config_path = hf_hub_download(
+    repo_id="TomasGuija/RCTSynth",
+    filename="config.json",
+    local_dir="checkpoints",
+)
 
 checkpoint_path = hf_hub_download(
     repo_id="TomasGuija/RCTSynth",
