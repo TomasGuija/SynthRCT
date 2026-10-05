@@ -1,7 +1,7 @@
 # SynthRCT: Scalable Conditional Deformation Synthesis for Synthetic Repeat CT Generation
 
 [![arXiv](https://img.shields.io/badge/arXiv-2609.03956-b31b1b.svg)](https://arxiv.org/abs/2609.08627)
-
+[![MICCAI 2026](https://img.shields.io/badge/MICCAI-2026-0055A4.svg)](https://papers.miccai.org/miccai-2026-sat/MIART_010.html)
 
 This is the official repository for the paper "**SynthRCT: Scalable Conditional Deformation Synthesis for Synthetic Repeat CT Generation**".
 RCTSynth learns a distribution of plausible anatomical deformations from longitudinal CT images. Given one moving CT volume, the model can sample latent deformation codes, decode them into dense deformation fields, and generate multiple anatomically consistent repeat CT volumes.
@@ -145,10 +145,6 @@ The 2D interpolation GIF uses Pillow. The optional surface-rendered lung GIF add
 </table>
 
 
-
-
-
-
 ## License
 
 The RCTSynth software and released model weights are available under the
@@ -158,7 +154,18 @@ covered by that license; see
 
 ## Citation
 
-Coming soon.
+```bibtex
+@InProceedings{GuiTom_SynthRCT_MICCAISAT2026,
+  author    = {Guija-Valiente, Tomás and Malpica, Norberto and Rodriguez-Gonzalez, Blanca},
+  title     = {SynthRCT: Scalable Conditional Deformation Synthesis for Synthetic Repeat CT Generation},
+  booktitle = {Medical Image Computing and Computer Assisted Intervention -- MICCAI 2026 Workshops and Challenges},
+  year      = {2026},
+  publisher = {Springer Nature Switzerland},
+  volume    = {LNCS 17274},
+  month     = {pending},
+  pages     = {pending}
+}
+```
 
 ## References
 
