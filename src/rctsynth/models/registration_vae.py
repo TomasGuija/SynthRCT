@@ -1,9 +1,12 @@
 """Registration VAE model for SynthRCT.
 
-The model learns a latent distribution over anatomical deformations. During
+The original model learns a latent distribution over anatomical deformations. During
 training, a posterior encoder observes the fixed/moving image pair. At inference
 time, an anatomy-conditioned prior samples deformations from the moving image
 alone.
+
+Phase-conditioned models instead omit the posterior and use the conditioned prior mean
+directly during training and inference.
 
 The decoder operates on axial slabs. It predicts stationary velocity fields
 (SVFs), refines overlapping slab predictions, integrates the SVF into a dense
@@ -46,14 +49,17 @@ class RegistrationVAE(nn.Module):
 
     The model learns a latent distribution over anatomical deformations.
 
-    During training, the posterior encoder observes the fixed and moving images
+    During regular training, the posterior encoder observes the fixed and moving images
     and predicts ``q(z | fixed, moving)``. The prior encoder observes only the
     moving image and predicts ``p(z | moving)``.
 
-    The decoder receives a latent code and two overlapping moving-image slabs.
-    It predicts one SVF per slab, refines the overlap with a residual UNet,
-    integrates the stitched SVF into a deformation field, and warps the moving
-    image.
+    During phase-conditioned training, the posterior path is removed and the
+    prior mean ``p(z | moving, s)`` is used directly as the latent code.
+
+    The decoder receives the latent code, optionally the target phase ``s``, and
+    two overlapping moving-image slabs. It predicts one SVF per slab, refines the
+    overlap with a residual UNet, integrates the stitched SVF into a deformation field,
+    and warps the moving image.
     """
 
     def __init__(
@@ -68,6 +74,7 @@ class RegistrationVAE(nn.Module):
         convs_per_block: int = 2,
         latent_dim: int = 64,
         svf_steps: int = 7,
+        condition_on_phase: bool = False,
     ) -> None:
         """Initialize the final SynthRCT registration VAE."""
         super().__init__()
@@ -80,6 +87,8 @@ class RegistrationVAE(nn.Module):
         self.convs_per_block = int(convs_per_block)
         self.latent_dim = int(latent_dim)
         self.svf_steps = int(svf_steps)
+        self.condition_on_phase = bool(condition_on_phase)
+        self.phase_dim = int(self.condition_on_phase)
 
         self._validate_slab_size()
         self._validate_stitch_stride()
@@ -91,18 +100,21 @@ class RegistrationVAE(nn.Module):
 
         self.reconstruction = SpatialTransform(self._stitched_shape(self.slab_size))
 
-        self.posterior_encoder = ConvPosteriorEncoder(
-            base_ch=self.base_ch,
-            n_levels=self.n_levels,
-            convs_per_block=self.convs_per_block,
-            latent_dim=self.latent_dim,
-            pool_stride=POOL_STRIDE,
-        )
+        self.posterior_encoder = None
+        if not self.condition_on_phase:
+            self.posterior_encoder = ConvPosteriorEncoder(
+                base_ch=self.base_ch,
+                n_levels=self.n_levels,
+                convs_per_block=self.convs_per_block,
+                latent_dim=self.latent_dim,
+                pool_stride=POOL_STRIDE,
+            )
         self.prior_encoder = ConvPriorEncoder(
             base_ch=self.base_ch,
             n_levels=self.n_levels,
             convs_per_block=self.convs_per_block,
             latent_dim=self.latent_dim,
+            condition_on_phase=self.condition_on_phase,
             pool_stride=POOL_STRIDE,
         )
 
@@ -119,7 +131,8 @@ class RegistrationVAE(nn.Module):
                 f"Got decoder_hidden_shape={decoder_hidden_shape}."
             )
 
-        self.z_to_film = nn.Linear(self.latent_dim, 2 * self.mov_channels[-1])
+        self.film_input_dim = self.latent_dim + self.phase_dim
+        self.z_to_film = nn.Linear(self.film_input_dim, 2 * self.mov_channels[-1])
         self._init_zero_linear(self.z_to_film)
         
         self.deep_supervision_decoder_indices: list[int] = []
@@ -242,7 +255,7 @@ class RegistrationVAE(nn.Module):
 
             self.decoders.append(self._block(curr_ch, dec_ch))
 
-            film = nn.Linear(self.latent_dim, 2 * dec_ch)
+            film = nn.Linear(self.film_input_dim, 2 * dec_ch)
             self._init_zero_linear(film)
             self.decoder_films.append(film)
 
@@ -311,12 +324,51 @@ class RegistrationVAE(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps * std
 
+    def _prepare_target_phase(
+        self,
+        target_phase: torch.Tensor | None,
+        reference: torch.Tensor,
+    ) -> torch.Tensor | None:
+        """Validate and reshape the optional scalar phase condition."""
+        if not self.condition_on_phase:
+            return None
+        if target_phase is None:
+            raise ValueError("A target phase is required.")
+
+        target_phase = target_phase.to(reference)
+        if target_phase.ndim == 1:
+            target_phase = target_phase[:, None]
+        if target_phase.shape != (reference.shape[0], 1):
+            raise ValueError(
+                f"Expected target_phase shape {(reference.shape[0], 1)}, "
+                f"got {tuple(target_phase.shape)}."
+            )
+        if not torch.all(
+            torch.isfinite(target_phase)
+            & (target_phase >= 0.0)
+            & (target_phase < 1.0)
+        ):
+            raise ValueError("Target phases must be finite and in [0, 1).")
+        return target_phase
+
+    def _decoder_input(
+        self,
+        z: torch.Tensor,
+        target_phase: torch.Tensor | None,
+    ) -> torch.Tensor:
+        phase = self._prepare_target_phase(target_phase, z)
+        return z if phase is None else torch.cat([z, phase], dim=1)
+
     def encode_posterior(
         self,
         fixed_full: torch.Tensor,
         moving_full: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Encode full fixed/moving volumes into posterior parameters."""
+        if self.posterior_encoder is None:
+            raise RuntimeError(
+                "The posterior encoder is disabled when condition_on_phase=True."
+            )
         if fixed_full.shape != moving_full.shape:
             raise ValueError(
                 "fixed_full and moving_full must have identical shapes; "
@@ -327,10 +379,15 @@ class RegistrationVAE(nn.Module):
         moving_full = self.pad_encoder_input(moving_full)
         return self.posterior_encoder(fixed_full, moving_full)
 
-    def encode_prior(self, moving_full: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def encode_prior(
+        self,
+        moving_full: torch.Tensor,
+        target_phase: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Encode a full moving volume into prior parameters."""
         moving_full = self.pad_encoder_input(moving_full)
-        return self.prior_encoder(moving_full)
+        phase = self._prepare_target_phase(target_phase, moving_full)
+        return self.prior_encoder(moving_full, phase)
 
     def encode_moving_slab(
         self,
@@ -393,10 +450,11 @@ class RegistrationVAE(nn.Module):
         self,
         z: torch.Tensor,
         moving_slab: torch.Tensor,
+        target_phase: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Decode independent moving slabs into raw SVFs without stitching or warping."""
         raw, _ = self._decode_slab_features(
-            z,
+            self._decoder_input(z, target_phase),
             moving_slab,
             return_deep_supervision=False,
         )
@@ -519,6 +577,7 @@ class RegistrationVAE(nn.Module):
         self,
         z: torch.Tensor,
         moving_slab: torch.Tensor,
+        target_phase: torch.Tensor | None = None,
         *,
         return_deep_supervision: bool = False,
     ) -> list[dict[str, Any]]:
@@ -531,7 +590,10 @@ class RegistrationVAE(nn.Module):
         return_deep_supervision = return_deep_supervision and self.use_deep_supervision
 
         z_flat, moving_flat = (
-            self._prepare_grouped_decode_inputs(z, moving_slab)
+            self._prepare_grouped_decode_inputs(
+                self._decoder_input(z, target_phase),
+                moving_slab,
+            )
         )
 
         raw_flat, deep_raws_flat = self._decode_slab_features(
@@ -602,20 +664,26 @@ class RegistrationVAE(nn.Module):
         fixed_full: torch.Tensor,
         moving_full: torch.Tensor,
         moving_slab: torch.Tensor,
+        target_phase: torch.Tensor | None = None,
         *,
         return_deep_supervision: bool = False,
     ) -> dict[str, Any]:
         """Run the training/evaluation forward pass."""
-        q_mu, q_logvar = self.encode_posterior(
-            fixed_full=fixed_full,
-            moving_full=moving_full,
-        )
-        p_mu, p_logvar = self.encode_prior(moving_full)
-        z = self._reparameterize(q_mu, q_logvar)
+        p_mu, p_logvar = self.encode_prior(moving_full, target_phase=target_phase)
+        if self.condition_on_phase:
+            q_mu = q_logvar = None
+            z = p_mu
+        else:
+            q_mu, q_logvar = self.encode_posterior(
+                fixed_full=fixed_full,
+                moving_full=moving_full,
+            )
+            z = self._reparameterize(q_mu, q_logvar)
 
         outputs = self.decode(
             z,
             moving_slab,
+            target_phase=target_phase,
             return_deep_supervision=return_deep_supervision,
         )
         primary = outputs[0]

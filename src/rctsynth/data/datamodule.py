@@ -11,6 +11,7 @@ from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader
 
 from rctsynth.data.dataset import H5RegistrationDataset
+from rctsynth.data.reference_phase_dataset import H5ReferencePhaseDataset
 
 
 def registration_collate(batch: list[dict]) -> dict:
@@ -39,6 +40,8 @@ def registration_collate(batch: list[dict]) -> dict:
             output[key] = torch.stack(values, dim=0)
         elif isinstance(first, (int, np.integer)):
             output[key] = torch.as_tensor(values, dtype=torch.long)
+        elif isinstance(first, (float, np.floating)):
+            output[key] = torch.as_tensor(values, dtype=torch.float32)
         else:
             output[key] = values
 
@@ -57,6 +60,7 @@ class VAEDataModule(LightningDataModule):
         stitch_stride: int | None = None,
         num_sampled_regions: int = 1,
         min_scan_distance: int = 3,
+        reference_time_id: int | None = None,
         batch_size: int = 4,
         num_workers: int = 0,
         shuffle: bool = True,
@@ -128,7 +132,16 @@ class VAEDataModule(LightningDataModule):
         sampling_mode: str,
     ) -> H5RegistrationDataset:
         """Build one dataset split."""
-        return H5RegistrationDataset(
+        dataset_class = (
+            H5RegistrationDataset
+            if self.hparams.reference_time_id is None
+            else H5ReferencePhaseDataset
+        )
+        kwargs = {}
+        if self.hparams.reference_time_id is not None:
+            kwargs["reference_time_id"] = self.hparams.reference_time_id
+
+        return dataset_class(
             h5_path=self.hparams.h5_path,
             slab_size=self.hparams.slab_size,
             stitch_stride=self.hparams.stitch_stride,
@@ -136,6 +149,7 @@ class VAEDataModule(LightningDataModule):
             min_scan_distance=self.hparams.min_scan_distance,
             sampling_mode=sampling_mode,
             case_ids=case_ids,
+            **kwargs,
         )
 
     def _loader(

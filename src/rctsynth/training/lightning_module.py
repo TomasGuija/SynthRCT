@@ -19,7 +19,10 @@ torch.backends.cudnn.allow_tf32 = False
 
 
 class VAELightning(LightningModule):
-    """Lightning wrapper for SynthRCT registration VAE training.
+    """Lightning wrapper for SynthRCT registration training.
+
+    Phase conditioning uses the deterministic prior path; the unconditioned
+    model uses the original posterior/prior variational objective.
 
     Expected batch keys
     -------------------
@@ -31,6 +34,8 @@ class VAELightning(LightningModule):
         Two slab centers with shape ``(B, 2)`` or ``(B, R, 2)``.
     loss_mask:
         Optional full-volume mask with shape ``(B, D, H, W, 1)``.
+    target_phase:
+        Optional target respiratory phase with shape ``(B,)``.
     """
 
     def __init__(
@@ -45,6 +50,7 @@ class VAELightning(LightningModule):
         convs_per_block: int = 2,
         latent_dim: int = 32,
         svf_steps: int = 7,
+        condition_on_phase: bool = False,
         deep_supervision_scales: list[int] | None = None,
 
         # Loss weights
@@ -96,6 +102,15 @@ class VAELightning(LightningModule):
 
         datamodule = self.trainer.datamodule
         full_size = tuple(int(s) for s in datamodule.vol_size)
+
+        if (
+            self.hparams.condition_on_phase
+            and datamodule.hparams.reference_time_id is None
+        ):
+            raise ValueError(
+                "condition_on_phase=True requires data.reference_time_id so the "
+                "dataloader returns target_phase."
+            )
 
         slab_depth = int(self.hparams.slab_size)
         stitch_stride = (
@@ -173,6 +188,7 @@ class VAELightning(LightningModule):
             convs_per_block=int(self.hparams.convs_per_block),
             latent_dim=int(self.hparams.latent_dim),
             svf_steps=int(self.hparams.svf_steps),
+            condition_on_phase=bool(self.hparams.condition_on_phase),
         )
 
     # ---------------------------------------------------------------------
@@ -373,24 +389,38 @@ class VAELightning(LightningModule):
         fixed_slab: torch.Tensor,
         moving_slab: torch.Tensor,
         loss_mask: torch.Tensor | None,
+        target_phase: torch.Tensor | None,
         num_regions: int,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute the full training loss for one batch."""
-        q_mu, q_logvar = self.model.encode_posterior(
-            fixed_full=fixed_full,
-            moving_full=moving_full,
+        p_mu, p_logvar = self.model.encode_prior(
+            moving_full,
+            target_phase=target_phase,
         )
-        p_mu, p_logvar = self.model.encode_prior(moving_full)
-        z = self.model._reparameterize(q_mu, q_logvar)
+        if self.hparams.condition_on_phase:
+            q_mu = q_logvar = None
+            z = p_mu
+        else:
+            q_mu, q_logvar = self.model.encode_posterior(
+                fixed_full=fixed_full,
+                moving_full=moving_full,
+            )
+            z = self.model._reparameterize(q_mu, q_logvar)
         z_decode = (
             z.repeat_interleave(int(num_regions), dim=0)
             if int(num_regions) != 1
             else z
         )
+        phase_decode = (
+            target_phase.repeat_interleave(int(num_regions), dim=0)
+            if target_phase is not None and int(num_regions) != 1
+            else target_phase
+        )
 
         outputs = self.model.decode(
             z_decode,
             moving_slab,
+            target_phase=phase_decode,
             return_deep_supervision=bool(self.deep_supervision_scales),
         )
         primary = outputs[0]
@@ -427,20 +457,25 @@ class VAELightning(LightningModule):
             aux_sim_loss = aux_sim_loss + float(weight) * scale_loss
 
         with torch.autocast(device_type="cuda", enabled=False):
-            posterior_to_prior = loss.kl_divergence_gaussians(
-                q_mu.float(),
-                q_logvar.float(),
-                p_mu.float(),
-                p_logvar.float(),
-            )
-            prior_to_standard = loss.kl_divergence(
-                p_mu.float(),
-                p_logvar.float(),
-            )
-            kl_loss = (
-                posterior_to_prior
-                + self.hparams.prior_kl_weight * prior_to_standard
-            )
+            if not self.hparams.condition_on_phase:
+                posterior_to_prior = loss.kl_divergence_gaussians(
+                    q_mu.float(),
+                    q_logvar.float(),
+                    p_mu.float(),
+                    p_logvar.float(),
+                )
+                prior_to_standard = loss.kl_divergence(
+                    p_mu.float(),
+                    p_logvar.float(),
+                )
+                kl_loss = (
+                    posterior_to_prior
+                    + self.hparams.prior_kl_weight * prior_to_standard
+                )
+            else:
+                posterior_to_prior = p_mu.new_zeros(())
+                prior_to_standard = p_mu.new_zeros(())
+                kl_loss = p_mu.new_zeros(())
 
         total = (
             self.hparams.sim_weight * sim_loss
@@ -477,6 +512,13 @@ class VAELightning(LightningModule):
         """Run one training or validation step."""
         moving_full = self._to_ncdhw(batch["moving"], dtype=torch.float32)
         fixed_full = self._to_ncdhw(batch["fixed"], dtype=torch.float32)
+        target_phase = batch.get("target_phase")
+        if target_phase is not None:
+            target_phase = target_phase.to(
+                self.device,
+                dtype=torch.float32,
+                non_blocking=True,
+            )
 
         loss_mask_full = self._to_ncdhw(
             batch.get("loss_mask"),
@@ -517,6 +559,7 @@ class VAELightning(LightningModule):
             fixed_slab=fixed_slab,
             moving_slab=moving_slab,
             loss_mask=loss_mask,
+            target_phase=target_phase,
             num_regions=num_regions,
         )
 

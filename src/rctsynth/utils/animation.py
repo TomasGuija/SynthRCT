@@ -133,8 +133,9 @@ def save_rgb_frames_gif(
     output_path: str | Path,
     *,
     fps: float = 5.0,
+    ping_pong: bool = True,
 ) -> Path:
-    """Save NumPy frames as a looping ping-pong GIF."""
+    """Save NumPy frames as a looping GIF."""
     Image = _require_pillow()
 
     if fps <= 0:
@@ -142,9 +143,9 @@ def save_rgb_frames_gif(
     if not frames:
         raise ValueError("At least one frame is required.")
 
-    arrays = _ping_pong_frames(
-        [np.asarray(frame, dtype=np.uint8) for frame in frames]
-    )
+    arrays = [np.asarray(frame, dtype=np.uint8) for frame in frames]
+    if ping_pong:
+        arrays = _ping_pong_frames(arrays)
 
     pillow_frames = []
     for frame in arrays:
@@ -185,8 +186,9 @@ def save_volume_gif(
     fps: float = 5.0,
     percentiles: tuple[float, float] = (1.0, 99.0),
     cmap: str = "gray",
+    ping_pong: bool = True,
 ) -> Path:
-    """Create a consistently windowed looping ping-pong GIF."""
+    """Create a consistently windowed looping GIF."""
     volumes = [
         np.asarray(volume, dtype=np.float32)
         for volume in volumes_dhw
@@ -231,6 +233,7 @@ def save_volume_gif(
         frames,
         output_path,
         fps=fps,
+        ping_pong=ping_pong,
     )
 
 
@@ -447,8 +450,9 @@ def save_png_sequence_gif(
     output_path: str | Path,
     *,
     fps: float = 5.0,
+    ping_pong: bool = True,
 ) -> Path:
-    """Assemble PNG files into a looping ping-pong GIF."""
+    """Assemble PNG files into a looping GIF."""
     Image = _require_pillow()
 
     frames = []
@@ -462,6 +466,7 @@ def save_png_sequence_gif(
         frames,
         output_path,
         fps=fps,
+        ping_pong=ping_pong,
     )
 
 
@@ -475,6 +480,7 @@ def create_slicer_lung_gif(
     slicer_executable: str | Path,
     gif_name: str = "lung_3d.gif",
     fps: float = 5.0,
+    ping_pong: bool = True,
 ) -> Path:
     """Warp a lung mask, render it in Slicer, and assemble a 3D GIF."""
     output_dir = Path(output_dir)
@@ -501,4 +507,5 @@ def create_slicer_lung_gif(
         png_paths,
         output_dir / gif_name,
         fps=fps,
+        ping_pong=ping_pong,
     )

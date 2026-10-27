@@ -15,9 +15,12 @@ The dataloader expects one `.h5` file with axial 3D volumes. The expected struct
 dataset.h5
 ├── attrs
 │   ├── target_shape = (D, H, W)
+│   ├── spacing_mm = float                    # optional
 │
 ├── case_id             # int array of shape (N,)
+├── source_id           # optional UTF-8 subject identifier of shape (N,)
 ├── time_id             # int array of shape (N,)
+├── phase_fraction      # optional float32 array of shape (N,)
 ├── valid_axis_start    # int array of shape (N,)
 ├── valid_axis_end      # int array of shape (N,)
 │
@@ -99,6 +102,10 @@ images/0000003, images/0000004, images/0000005 -> patient 1
 
 The dataset assumes that `case_id[i]` corresponds to `images/{i:07d}`.
 
+### `source_id`
+
+Optional original subject identifier retained for provenance.
+
 ### `time_id`
 
 Integer array of shape `(N,)`.
@@ -121,6 +128,17 @@ With `min_scan_distance = 2`, possible phase pairs include:
 ```
 
 Directly consecutive phases are excluded in this example.
+
+### `phase_fraction`
+
+Respiratory-cycle position in `[0, 1)` for each volume. It is optional for ordinary
+pair training and required for phase-conditioned training.
+
+For the phase-conditioned experiment, set `data.reference_time_id` to the
+canonical source phase and enable `model.condition_on_phase`. Training keeps
+that source fixed and randomly samples a target phase; validation covers each
+target once deterministically. Enabling phase conditioning automatically
+removes the posterior path and uses the prior mean directly as the latent code.
 
 ### `valid_axis_start` and `valid_axis_end`
 
@@ -220,6 +238,7 @@ The returned dictionary has the form:
     "fixed": fixed_image,        # array of shape (D, H, W, 1)
     "center": centers,           # array of shape (R, 2)
     "loss_mask": loss_mask,      # array of shape (D, H, W, 1), or None
+    "target_phase": phase,       # scalar, phase-conditioned training only
 }
 ```
 
@@ -241,6 +260,20 @@ The original data can be requested from the official [DIR-Lab/Emory 4DCT dataset
 
 
 Please follow the terms and instructions provided by the official data source. This repository does not redistribute the original or preprocessed medical imaging data.
+
+## Phase-conditioned data source
+
+The phase-conditioned proof of concept used the subset of
+the [TCIA 4D-Lung collection](https://www.cancerimagingarchive.net/collection/4d-lung/)
+distributed by
+[MONAI Physio](https://github.com/Project-MONAI/monai-physio). This is a subset
+of the full TCIA collection, not the complete 20-subject release.
+
+See the [MONAI Physio TCIA-4DLung documentation](https://github.com/Project-MONAI/monai-physio/tree/main/data/TCIA-4DLung)
+for the current download instructions.
+
+The supplied phase-conditioned configuration uses `s=0.7` as the
+fixed source phase.
 
 ## Original preprocessing used in this project
 
@@ -269,6 +302,12 @@ During training and evaluation, the two selected phases were required to be sepa
 [1] Castillo, E., Castillo, R., Martinez, J., Shenoy, M., & Guerrero, T. (2010). Four-dimensional deformable image registration using trajectory modeling. *Physics in Medicine and Biology, 55*(1), 305–327. https://doi.org/10.1088/0031-9155/55/1/018
 
 [2] Castillo, R., Castillo, E., Guerra, R., Johnson, V. E., McPhail, T., Garg, A. K., & Guerrero, T. (2009). A framework for evaluation of deformable image registration spatial accuracy using large landmark point sets. *Physics in Medicine and Biology, 54*(7), 1849–1870. https://doi.org/10.1088/0031-9155/54/7/001
+
+[3] Hugo, G. D., Weiss, E., Sleeman, W. C., Balik, S., Keall, P. J., Lu, J., & Williamson, J. F. (2017). A longitudinal four-dimensional computed tomography and cone beam computed tomography dataset for image-guided radiation therapy research in lung cancer. *Medical Physics, 44*(2), 762–771. https://doi.org/10.1002/mp.12059
+
+[4] Hugo, G. D., et al. (2016). *Data from 4D Lung Imaging of NSCLC Patients (4D-Lung)* [Data set]. The Cancer Imaging Archive. https://doi.org/10.7937/K9/TCIA.2016.ELN8YGLE
+
+[5] Project MONAI. *MONAI Physio* [Software]. https://github.com/Project-MONAI/monai-physio
 
 
 ## Questions

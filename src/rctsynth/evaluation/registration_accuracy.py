@@ -26,7 +26,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from rctsynth.utils.core import resolve_device, to_torch_5d
-from rctsynth.utils.latent import encode_pair_z
+from rctsynth.utils.latent import encode_pair_z, encode_prior_z
 from rctsynth.utils.model_loading import load_vae
 from rctsynth.utils.spatial import decode_full_volume_with_refiner
 
@@ -89,8 +89,9 @@ def build_ordered_pairs(
     time_ids: np.ndarray,
     selected_case_ids: list[int],
     min_scan_distance: int,
+    reference_time_id: int | None = None,
 ) -> list[tuple[int, int, int]]:
-    """Build ordered intra-patient moving/fixed pairs."""
+    """Build ordered or fixed-reference intra-patient pairs."""
     selected_case_ids = set(selected_case_ids)
 
     by_case: dict[int, list[int]] = {}
@@ -103,6 +104,18 @@ def build_ordered_pairs(
 
     for case_id, indices in by_case.items():
         indices = sorted(indices, key=lambda idx: time_ids[idx])
+
+        if reference_time_id is not None:
+            references = [
+                idx for idx in indices if int(time_ids[idx]) == reference_time_id
+            ]
+            if len(references) != 1:
+                raise ValueError(
+                    f"Case {case_id} must have exactly one "
+                    f"time_id={reference_time_id}; found {len(references)}."
+                )
+            pairs.extend((references[0], fixed_idx, case_id) for fixed_idx in indices)
+            continue
 
         for a, moving_idx in enumerate(indices):
             for b, fixed_idx in enumerate(indices):
@@ -208,6 +221,26 @@ def rmse_torch(
 
 
 @torch.no_grad()
+def compute_pair_metrics(
+    image: np.ndarray,
+    fixed: np.ndarray,
+    mask: np.ndarray | None,
+    device: torch.device,
+) -> dict[str, float]:
+    """Compute LNCC and RMSE between one image and its target."""
+    image_t = to_torch_5d(image, device)
+    fixed_t = to_torch_5d(fixed, device)
+    mask_t = None if mask is None else to_torch_5d(mask.astype(np.float32), device)
+
+    lncc = lncc_torch(image_t, fixed_t, mask=mask_t)
+    rmse = rmse_torch(image_t, fixed_t, mask=mask_t)
+
+    return {
+        "lncc": float(lncc.detach().cpu()),
+        "rmse": float(rmse.detach().cpu()),
+    }
+
+
 def compute_image_metrics(
     moving: np.ndarray,
     fixed: np.ndarray,
@@ -216,22 +249,13 @@ def compute_image_metrics(
     device: torch.device,
 ) -> dict[str, float]:
     """Compute identity and registered LNCC/RMSE."""
-    moving_t = to_torch_5d(moving, device)
-    fixed_t = to_torch_5d(fixed, device)
-    warped_t = to_torch_5d(warped, device)
-    mask_t = None if mask is None else to_torch_5d(mask.astype(np.float32), device)
-
-    lncc_identity = lncc_torch(moving_t, fixed_t, mask=mask_t)
-    lncc_registered = lncc_torch(warped_t, fixed_t, mask=mask_t)
-
-    rmse_identity = rmse_torch(moving_t, fixed_t, mask=mask_t)
-    rmse_registered = rmse_torch(warped_t, fixed_t, mask=mask_t)
-
+    identity = compute_pair_metrics(moving, fixed, mask, device)
+    registered = compute_pair_metrics(warped, fixed, mask, device)
     return {
-        "lncc_identity": float(lncc_identity.detach().cpu()),
-        "lncc_registered": float(lncc_registered.detach().cpu()),
-        "rmse_identity": float(rmse_identity.detach().cpu()),
-        "rmse_registered": float(rmse_registered.detach().cpu()),
+        "lncc_identity": identity["lncc"],
+        "lncc_registered": registered["lncc"],
+        "rmse_identity": identity["rmse"],
+        "rmse_registered": registered["rmse"],
     }
 
 
@@ -281,6 +305,7 @@ def main() -> None:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--decode-batch-size", type=int, default=1)
     parser.add_argument("--min-scan-distance", type=int, default=2)
+    parser.add_argument("--reference-time-id", type=int)
 
     args = parser.parse_args()
 
@@ -291,12 +316,20 @@ def main() -> None:
         ckpt_path=args.ckpt,
         device=device,
     )
+    if model.condition_on_phase and args.reference_time_id is None:
+        raise ValueError(
+            "A phase-conditioned checkpoint requires --reference-time-id."
+        )
     slab_depth = int(model.slab_depth)
     stitch_stride = int(model.resolved_stitch_stride)
 
     with h5py.File(args.h5_path, "r") as fh:
         h5_case_ids = np.asarray(fh["case_id"][:], dtype=np.int32)
         h5_time_ids = np.asarray(fh["time_id"][:], dtype=np.int32)
+        if model.condition_on_phase and "phase_fraction" not in fh:
+            raise KeyError(
+                f"{fh.filename} is missing 'phase_fraction' required by the model."
+            )
         has_anatomy_masks = "anatomy_masks" in fh
 
         available_case_ids = sorted(x for x in np.unique(h5_case_ids))
@@ -313,6 +346,7 @@ def main() -> None:
             time_ids=h5_time_ids,
             selected_case_ids=case_ids_requested,
             min_scan_distance=args.min_scan_distance,
+            reference_time_id=args.reference_time_id,
         )
 
     rows = []
@@ -337,19 +371,32 @@ def main() -> None:
                 if loss_mask_full is None
                 else loss_mask_full[valid_start:valid_end]
             )
-
-            z = encode_pair_z(
-                model=model,
-                fixed_full_dhw=fixed_full,
-                moving_full_dhw=moving_full,
-                device=device,
+            target_phase = (
+                float(fh["phase_fraction"][fixed_idx])
+                if model.condition_on_phase
+                else None
             )
+
+            if model.condition_on_phase:
+                z = encode_prior_z(
+                    model=model,
+                    moving_full_dhw=moving_full,
+                    target_phase=target_phase,
+                    device=device,
+                )
+            else:
+                z = encode_pair_z(
+                    model=model,
+                    fixed_full_dhw=fixed_full,
+                    moving_full_dhw=moving_full,
+                    device=device,
+                )
 
             warped_valid, _, _ = decode_full_volume_with_refiner(
                 model=model,
                 z=z,
-                moving_full_dhw=moving_valid,
-                device=device,
+                moving_dhw=moving_valid,
+                target_phase=target_phase,
                 batch_size=max(1, int(args.decode_batch_size)),
             )
 
@@ -365,7 +412,7 @@ def main() -> None:
 
             rows.append(
                 {
-                    "case_id": case_id,
+                    "case_id": int(case_id),
                     "moving_idx": moving_idx,
                     "fixed_idx": fixed_idx,
                     "valid_start": int(valid_start),
@@ -378,6 +425,7 @@ def main() -> None:
         "config": {
             "ckpt": args.ckpt,
             "h5_path": args.h5_path,
+            "reference_time_id": args.reference_time_id,
             "case_ids": case_ids_requested,
             "min_scan_distance": int(args.min_scan_distance),
             "slab_size": int(slab_depth),

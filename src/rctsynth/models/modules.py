@@ -50,6 +50,7 @@ class _ConvLatentEncoder(nn.Module):
         n_levels: int,
         convs_per_block: int,
         latent_dim: int,
+        condition_on_phase: bool = False,
         pool_stride: tuple[int, int, int] = (2, 2, 2),
     ):
         """Initialize the shared convolutional latent encoder.
@@ -66,12 +67,16 @@ class _ConvLatentEncoder(nn.Module):
             Number of convolutions per encoder block.
         latent_dim:
             Size of the latent vector.
+        condition_on_phase:
+            Whether to concatenate one scalar target respiratory phase after
+            global pooling.
         pool_stride:
             Max-pooling stride used after each encoder level.
         """
         super().__init__()
 
         self.pool_stride = tuple(pool_stride)
+        self.condition_on_phase = condition_on_phase
 
         encoders: list[nn.Module] = []
         prev_ch = int(in_channels)
@@ -87,20 +92,28 @@ class _ConvLatentEncoder(nn.Module):
         self.bottleneck = conv_block(prev_ch, bottleneck_ch, convs_per_block)
         self.pool = nn.AdaptiveAvgPool3d(1)
 
-        self.mu = nn.Linear(bottleneck_ch, latent_dim)
-        self.logvar = nn.Linear(bottleneck_ch, latent_dim)
+        latent_in_ch = bottleneck_ch + int(self.condition_on_phase)
+        self.mu = nn.Linear(latent_in_ch, latent_dim)
+        self.logvar = nn.Linear(latent_in_ch, latent_dim)
 
         # Start with approximately unit variance: logvar ~= 0.
         nn.init.zeros_(self.logvar.weight)
         nn.init.zeros_(self.logvar.bias)
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        x: torch.Tensor,
+        target_phase: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Encode an input volume into ``mu`` and ``logvar``.
 
         Parameters
         ----------
         x:
             Input tensor of shape ``(B, C, D, H, W)``.
+        target_phase:
+            Optional target respiratory phase of shape ``(B,)`` or ``(B, 1)``.
+            Required when phase conditioning is enabled.
 
         Returns
         -------
@@ -113,6 +126,19 @@ class _ConvLatentEncoder(nn.Module):
 
         x = self.bottleneck(x)
         x = self.pool(x).flatten(1)
+
+        if self.condition_on_phase:
+            if target_phase is None:
+                raise ValueError("This encoder requires a target phase.")
+            if target_phase.ndim == 1:
+                target_phase = target_phase.unsqueeze(1)
+            if target_phase.shape != (x.shape[0], 1):
+                raise ValueError(
+                    f"Expected target_phase shape {(x.shape[0], 1)}, "
+                    f"got {tuple(target_phase.shape)}."
+                )
+            target_phase = target_phase.to(device=x.device, dtype=x.dtype)
+            x = torch.cat([x, target_phase], dim=1)
 
         return self.mu(x), self.logvar(x)
 
@@ -184,9 +210,10 @@ class ConvPosteriorEncoder(_ConvLatentEncoder):
 class ConvPriorEncoder(_ConvLatentEncoder):
     """Anatomy-conditioned prior encoder used at inference time.
 
-    The prior receives only the moving image and estimates ``p(z | moving)``.
-    Sampling from this distribution allows the model to generate plausible
-    repeat anatomies without observing a target fixed image.
+    The prior receives the moving image and, optionally, a scalar target phase
+    to estimate ``p(z | moving, s)``. Sampling from the unconditioned prior
+    allows the original model to generate plausible repeat anatomies without
+    observing a target fixed image.
     """
 
     def __init__(
@@ -196,6 +223,7 @@ class ConvPriorEncoder(_ConvLatentEncoder):
         n_levels: int,
         convs_per_block: int,
         latent_dim: int,
+        condition_on_phase: bool = False,
         pool_stride: tuple[int, int, int] = (2, 2, 2),
     ):
         """Initialize the prior encoder.
@@ -210,6 +238,9 @@ class ConvPriorEncoder(_ConvLatentEncoder):
             Number of convolutions per encoder block.
         latent_dim:
             Size of the latent vector.
+        condition_on_phase:
+            Whether to concatenate one scalar target respiratory phase after
+            global pooling.
         pool_stride:
             Max-pooling stride used after each encoder level.
         """
@@ -219,20 +250,28 @@ class ConvPriorEncoder(_ConvLatentEncoder):
             n_levels=n_levels,
             convs_per_block=convs_per_block,
             latent_dim=latent_dim,
+            condition_on_phase=condition_on_phase,
             pool_stride=pool_stride,
         )
 
-    def forward(self, moving_full: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        moving_full: torch.Tensor,
+        target_phase: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Encode a moving image into prior parameters.
 
         Parameters
         ----------
         moving_full:
             Moving image tensor of shape ``(B, 1, D, H, W)``.
+        target_phase:
+            Optional target respiratory phase of shape ``(B,)`` or ``(B, 1)``.
+            Required when phase conditioning is enabled.
 
         Returns
         -------
         tuple[torch.Tensor, torch.Tensor]
             Prior mean and log-variance, both of shape ``(B, latent_dim)``.
         """
-        return super().forward(moving_full)
+        return super().forward(moving_full, target_phase)

@@ -21,6 +21,47 @@ This design supports:
 - smooth latent-space traversals and interpolation;
 - export of warped CT volumes, SVFs, and displacement fields.
 
+## Open H 4D phase-conditioned extension
+
+We have extended the work described in the SynthRCT paper with explicit
+respiratory phase conditioning. This development supports a proposal for the
+[Open H 4D initiative](https://github.com/open-h/open-h-4d) and takes
+inspiration from [MONAI Physio](https://github.com/Project-MONAI/monai-physio).
+The phase-conditioned training and inference modes were introduced after the
+paper and are therefore not described or evaluated in the publication.
+
+The original model generates plausible repeat CTs without assigning them an
+explicit respiratory state. The extension adds a scalar target phase
+`s in [0, 1)` to make that state controllable. Following MONAI Physio, this
+implementation considers ten respiratory phases, represented by `s=0.0`,
+`s=0.1`, ..., `s=0.9`.
+
+Training and inference use the same path:
+
+1. One phase is selected as the reference CT for every subject (the supplied
+   configuration uses `s=0.7`). During training, a target phase from the same
+   subject is sampled and used as the registration target.
+2. The prior encoder receives only the reference CT and the requested `s`, and
+   produces the deformation latent code. The posterior path is not used.
+3. The decoder receives the reference-image features, latent code, and `s`,
+   then predicts the deformation that warps the reference CT toward the
+   requested respiratory state.
+4. At inference, the same reference CT can be reused with different values of
+   `s` to synthesize a full respiratory cycle. In this mode, the predicted
+   prior mean is used directly as the latent code during both training and
+   inference; no random latent samples are drawn.
+
+Setting `model.condition_on_phase: true` automatically removes the posterior
+path. With phase conditioning disabled, the original paper model remains the
+default.
+
+This deterministic formulation is intended as a proof of concept: it isolates
+whether the target phase can control the predicted motion without introducing
+sampling variability. A future extension could restore a variational
+formulation, sampling latent codes during training and using the learned mean
+for deterministic inference, to represent multiple plausible motions for the
+same anatomy and respiratory phase.
+
 ## Installation
 
 Python 3.10 or newer is recommended. Clone the repository and install it in editable mode:
@@ -99,8 +140,6 @@ python src/rctsynth/data/preprocess_ct.py \
 
 The masks produced by this script are threshold-based aids for demos and cropping; they are not clinical segmentations.
 
-The demonstration CT sample used during development was extracted from the **COVID-19 CT Lung and Infection Segmentation Dataset**. 
-
 ## Training
 
 After preparing the HDF5 dataset and updating the configuration, start training from the repository root:
@@ -116,6 +155,15 @@ python -m rctsynth.training.train fit \
   --config config/vae.yaml \
   --ckpt_path /path/to/last.ckpt
 ```
+
+To train the phase-conditioned, prior-only extension from scratch, run:
+
+```bash
+python -m rctsynth.training.train fit \
+  --config config/vae_phase_prior_only.yaml
+```
+
+This uses [`config/vae_phase_prior_only.yaml`](config/vae_phase_prior_only.yaml).
 
 ## Inference
 
@@ -144,6 +192,25 @@ The 2D interpolation GIF uses Pillow. The optional surface-rendered lung GIF add
   </tr>
 </table>
 
+### Phase-conditioned inference
+
+The [`phase_conditioned_inference.ipynb`](notebooks/phase_conditioned_inference.ipynb)
+notebook loads one source CT and generates the complete ten-state respiratory
+cycle. It saves each predicted volume and deformation field, creates axial and
+coronal GIFs, and can optionally render a 3D lung animation with 3D Slicer.
+
+<table width="100%" cellpadding="12" cellspacing="8" bgcolor="#EAF6FF">
+  <tr>
+    <td width="50%" align="center" valign="middle" bgcolor="#D9EEFF">
+      <span style="color:#174A6E"><strong>Axial breathing cycle</strong></span><br>
+      <img src="doc/phase_cycle_axial.gif" alt="Phase-conditioned axial breathing cycle" height="220">
+    </td>
+    <td width="50%" align="center" valign="middle" bgcolor="#D9EEFF">
+      <span style="color:#174A6E"><strong>Coronal breathing cycle</strong></span><br>
+      <img src="doc/phase_cycle_coronal.gif" alt="Phase-conditioned coronal breathing cycle" height="220">
+    </td>
+  </tr>
+</table>
 
 ## License
 

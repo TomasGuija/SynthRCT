@@ -70,6 +70,30 @@ def encode_identity_z(
 
 
 @torch.no_grad()
+def encode_prior_z(
+    model,
+    moving_full_dhw: np.ndarray,
+    device: torch.device | str | None = None,
+    target_phase: float | None = None,
+) -> torch.Tensor:
+    """Encode a moving image and return the deterministic prior mean."""
+    device = model_device(model) if device is None else resolve_device(device)
+    model.eval().to(device)
+
+    moving_t = to_torch_5d(moving_full_dhw, device)
+    phase_t = (
+        None
+        if target_phase is None
+        else torch.as_tensor([target_phase], dtype=torch.float32, device=device)
+    )
+    p_mu, _ = model.encode_prior(
+        moving_full=moving_t,
+        target_phase=phase_t,
+    )
+    return p_mu
+
+
+@torch.no_grad()
 def sample_prior_z(
     model,
     moving_full_dhw: np.ndarray,
@@ -78,6 +102,11 @@ def sample_prior_z(
     seed: int | None = None,
 ) -> torch.Tensor:
     """Sample latent codes from the anatomy-conditioned prior."""
+    if model.condition_on_phase:
+        raise ValueError(
+            "Phase-conditioned models use the deterministic prior mean; "
+            "call encode_prior_z() instead."
+        )
     device = model_device(model) if device is None else resolve_device(device)
     model.eval().to(device)
 
@@ -85,7 +114,6 @@ def sample_prior_z(
         torch.manual_seed(int(seed))
 
     moving_t = to_torch_5d(moving_full_dhw, device)
-
     p_mu, p_logvar = model.encode_prior(moving_full=moving_t)
     return _sample_from_mu_logvar(
         p_mu,

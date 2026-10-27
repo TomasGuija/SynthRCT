@@ -80,6 +80,7 @@ def decode_full_volume_with_refiner(
     z: np.ndarray | torch.Tensor,
     moving_dhw: np.ndarray,
     *,
+    target_phase: float | None = None,
     batch_size: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Decode one latent code into a warped volume, DVF, and SVF."""
@@ -138,10 +139,21 @@ def decode_full_volume_with_refiner(
         ).to(device)
 
         z_batch = z_t.expand(len(batch_starts), -1)
+        phase_batch = (
+            None
+            if target_phase is None
+            else torch.full(
+                (len(batch_starts),),
+                float(target_phase),
+                device=device,
+                dtype=z_batch.dtype,
+            )
+        )
 
         raw_batch = model.decode_raw_slab(
             z_batch,
             moving_t,
+            target_phase=phase_batch,
         )
 
         raw_slabs.extend(

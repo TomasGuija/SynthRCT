@@ -48,6 +48,7 @@ data:
   stitch_stride: null
   num_sampled_regions: 4
   min_scan_distance: 2
+  reference_time_id: null
 
   batch_size: 1
   num_workers: 2
@@ -71,6 +72,7 @@ model:
   out_channels: 3
   convs_per_block: 1
   latent_dim: 32
+  condition_on_phase: false
 
   # --- SVF integration ---
   svf_steps: 7
