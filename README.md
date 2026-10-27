@@ -85,36 +85,41 @@ If you need a specific CUDA-enabled PyTorch build, install the appropriate PyTor
 
 ## Pretrained weights
 
-The pretrained RCTSynth weights are openly available from
+The pretrained RCTSynth checkpoints are openly available from
 [Hugging Face](https://huggingface.co/TomasGuija/RCTSynth). Public downloads do
 not require authentication.
 
-Install the Hugging Face Hub client and download the model configuration and
-checkpoint into the path used by the inference notebook. The configuration
-records the released architecture, checkpoint format, and weight checksum.
+Two checkpoints are available:
+
+- `rctsynth.ckpt`: the original variational model described in the paper;
+- `phase_conditioned.ckpt`: the deterministic phase-conditioned extension.
+
+Install the Hugging Face Hub client and download the checkpoint required by the
+corresponding inference notebook:
 
 ```bash
 pip install huggingface_hub
+
+# Original model
 hf download TomasGuija/RCTSynth \
-  config.json rctsynth.ckpt \
+  rctsynth.ckpt \
+  --local-dir checkpoints
+
+# Phase-conditioned model
+hf download TomasGuija/RCTSynth \
+  phase_conditioned.ckpt \
   --local-dir checkpoints
 ```
 
-The same files can be downloaded and the checkpoint loaded from Python:
+The same checkpoints can be downloaded and loaded from Python:
 
 ```python
 from huggingface_hub import hf_hub_download
 from rctsynth.utils.model_loading import load_vae
 
-config_path = hf_hub_download(
-    repo_id="TomasGuija/RCTSynth",
-    filename="config.json",
-    local_dir="checkpoints",
-)
-
 checkpoint_path = hf_hub_download(
     repo_id="TomasGuija/RCTSynth",
-    filename="rctsynth.ckpt",
+    filename="phase_conditioned.ckpt",
     local_dir="checkpoints",
 )
 
